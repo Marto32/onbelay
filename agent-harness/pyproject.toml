@@ -1,0 +1,36 @@
+[tool.poetry]
+name = "agent-harness"
+version = "1.2.0"
+description = "Autonomous coding agent orchestration for long-running projects"
+authors = ["Michael Martorella"]
+readme = "README.md"
+packages = [{include = "agent_harness", from = "src"}]
+
+[tool.poetry.dependencies]
+python = "^3.11"
+anthropic = "^0.40.0"
+click = "^8.0"
+pyyaml = "^6.0"
+gitpython = "^3.1"
+rich = "^13.0"
+tiktoken = "^0.8"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.0"
+pytest-asyncio = "^0.23"
+ruff = "^0.1"
+
+[tool.poetry.scripts]
+harness = "agent_harness.cli:main"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
