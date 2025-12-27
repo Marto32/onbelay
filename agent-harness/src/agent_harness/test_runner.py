@@ -3,6 +3,7 @@
 Executes pytest and parses results.
 """
 
+import asyncio
 import json
 import re
 import subprocess
@@ -49,7 +50,9 @@ class TestRunResult:
         return len(self.passed) / self.total
 
 
-def run_tests(
+
+
+async def run_tests_async(
     project_dir: Path,
     test_path: Optional[str] = None,
     timeout: int = 300,
@@ -57,7 +60,7 @@ def run_tests(
     use_json_report: bool = True,
 ) -> TestRunResult:
     """
-    Run pytest and return structured results.
+    Run pytest and return structured results (async).
 
     Args:
         project_dir: Path to the project directory.
@@ -89,37 +92,57 @@ def run_tests(
     if extra_args:
         cmd.extend(extra_args)
 
-    # Run pytest
+    # Run pytest using async subprocess
     try:
-        result = subprocess.run(
-            cmd,
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
             cwd=project_dir,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
         )
-        raw_output = result.stdout + result.stderr
-        exit_code = result.returncode
-    except subprocess.TimeoutExpired:
-        return TestRunResult(
-            exit_code=-1,
-            raw_output="Test run timed out",
-            total=0,
-        )
+
+        try:
+            stdout, stderr = await asyncio.wait_for(
+                proc.communicate(), timeout=timeout
+            )
+            raw_output = stdout.decode() + stderr.decode()
+            exit_code = proc.returncode or 0
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.wait()
+            return TestRunResult(
+                exit_code=-1,
+                raw_output="Test run timed out",
+                total=0,
+            )
+
     except FileNotFoundError:
         # Try without poetry
-        cmd[0:2] = ["pytest"]
+        cmd = ["pytest"] + cmd[3:]
         try:
-            result = subprocess.run(
-                cmd,
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
                 cwd=project_dir,
-                capture_output=True,
-                text=True,
-                timeout=timeout,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
             )
-            raw_output = result.stdout + result.stderr
-            exit_code = result.returncode
-        except (subprocess.TimeoutExpired, FileNotFoundError):
+
+            try:
+                stdout, stderr = await asyncio.wait_for(
+                    proc.communicate(), timeout=timeout
+                )
+                raw_output = stdout.decode() + stderr.decode()
+                exit_code = proc.returncode or 0
+            except asyncio.TimeoutError:
+                proc.kill()
+                await proc.wait()
+                return TestRunResult(
+                    exit_code=-1,
+                    raw_output="Test run timed out",
+                    total=0,
+                )
+
+        except FileNotFoundError:
             return TestRunResult(
                 exit_code=-1,
                 raw_output="Failed to run pytest",
@@ -136,13 +159,15 @@ def run_tests(
     return _parse_pytest_output(raw_output, exit_code)
 
 
-def run_single_test(
+
+
+async def run_single_test_async(
     project_dir: Path,
     test_id: str,
     timeout: int = 60,
 ) -> TestResult:
     """
-    Run a single test and return the result.
+    Run a single test and return the result (async).
 
     Args:
         project_dir: Path to the project directory.
@@ -152,7 +177,7 @@ def run_single_test(
     Returns:
         TestResult for the test.
     """
-    result = run_tests(
+    result = await run_tests_async(
         project_dir,
         test_path=test_id,
         timeout=timeout,
@@ -376,15 +401,17 @@ def format_test_summary(result: TestRunResult) -> str:
     return "\n".join(lines)
 
 
-def run_test_file(
+
+
+async def run_test_file_async(
     project_dir: Path,
     test_file: str,
     timeout: int = 300,
 ) -> TestRunResult:
     """
-    Run all tests in a specific file.
+    Run all tests in a specific file (async).
 
-    Convenience wrapper for run_tests.
+    Convenience wrapper for run_tests_async.
 
     Args:
         project_dir: Path to the project directory.
@@ -394,4 +421,4 @@ def run_test_file(
     Returns:
         TestRunResult for the file.
     """
-    return run_tests(project_dir, test_path=test_file, timeout=timeout)
+    return await run_tests_async(project_dir, test_path=test_file, timeout=timeout)

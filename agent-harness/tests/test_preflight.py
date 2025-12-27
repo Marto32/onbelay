@@ -13,7 +13,7 @@ from agent_harness.preflight import (
     check_harness_files,
     check_working_directory,
     format_preflight_result,
-    run_preflight_checks,
+    run_preflight_checks_async,
 )
 
 
@@ -238,7 +238,8 @@ class TestCheckFeaturesFile:
 class TestRunPreflightChecks:
     """Tests for run_preflight_checks."""
 
-    def test_minimal_valid_setup(self, tmp_path):
+    @pytest.mark.asyncio
+    async def test_minimal_valid_setup(self, tmp_path):
         """Minimal valid setup should run checks."""
         import subprocess
 
@@ -264,7 +265,7 @@ class TestRunPreflightChecks:
         }
         (tmp_path / "features.json").write_text(json.dumps(features))
 
-        result = run_preflight_checks(
+        result = await run_preflight_checks_async(
             tmp_path,
             skip_tests=True,
             skip_init_script=True,
@@ -273,9 +274,10 @@ class TestRunPreflightChecks:
         # Should have run at least some checks
         assert len(result.checks) >= 3
 
-    def test_nonexistent_directory_fails_early(self):
+    @pytest.mark.asyncio
+    async def test_nonexistent_directory_fails_early(self):
         """Non-existent directory should fail on first check."""
-        result = run_preflight_checks(Path("/nonexistent"))
+        result = await run_preflight_checks_async(Path("/nonexistent"))
         assert result.passed is False
         assert len(result.checks) == 1
         assert result.checks[0].name == "working_directory"

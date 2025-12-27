@@ -126,7 +126,7 @@ class TestSessionOrchestrator:
         assert orchestrator.project_dir == tmp_path
         assert orchestrator.harness_dir == tmp_path / ".harness"
 
-    def test_session_returns_result(self, tmp_path):
+    async def test_session_returns_result(self, tmp_path):
         """Session run should return SessionResult."""
         self._create_minimal_project(tmp_path)
         # Make all features complete for simpler test
@@ -154,7 +154,7 @@ class TestSessionOrchestrator:
             skip_preflight=True,
         )
 
-        result = orchestrator.run_session(config)
+        result = await orchestrator.run_session(config)
 
         # Should return a SessionResult
         assert isinstance(result, SessionResult)
@@ -202,11 +202,11 @@ class TestRunSession:
 
         return tmp_path
 
-    def test_run_session_helper(self, tmp_path):
+    async def test_run_session_helper(self, tmp_path):
         """run_session helper should work."""
         self._create_minimal_project(tmp_path)
 
-        result = run_session(
+        result = await run_session(
             project_dir=tmp_path,
             skip_preflight=True,
         )
@@ -214,11 +214,11 @@ class TestRunSession:
         assert isinstance(result, SessionResult)
         assert result.session_id >= 1
 
-    def test_run_session_returns_result(self, tmp_path):
+    async def test_run_session_returns_result(self, tmp_path):
         """run_session should return SessionResult."""
         self._create_minimal_project(tmp_path)
 
-        result = run_session(
+        result = await run_session(
             project_dir=tmp_path,
             skip_preflight=True,
         )

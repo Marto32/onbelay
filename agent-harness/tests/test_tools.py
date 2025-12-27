@@ -14,7 +14,6 @@ from agent_harness.tools.executor import (
     ToolExecutionResult,
     ToolExecutor,
     create_default_handlers,
-    execute_tool,
     validate_tool_arguments,
 )
 from agent_harness.tools.schemas import (
@@ -401,21 +400,24 @@ class TestToolExecutionResult:
 class TestToolExecutor:
     """Tests for ToolExecutor."""
 
-    def test_execute_unknown_tool(self, tmp_path):
+    @pytest.mark.asyncio
+    async def test_execute_unknown_tool(self, tmp_path):
         """Executing unknown tool should fail."""
         executor = ToolExecutor(tmp_path)
-        result = executor.execute("unknown_tool", {})
+        result = await executor.execute_async("unknown_tool", {})
         assert result.success is False
         assert "Unknown tool" in result.error
 
-    def test_execute_without_handler(self, tmp_path):
+    @pytest.mark.asyncio
+    async def test_execute_without_handler(self, tmp_path):
         """Executing without handler should fail."""
         executor = ToolExecutor(tmp_path)
-        result = executor.execute("run_tests", {})
+        result = await executor.execute_async("run_tests", {})
         assert result.success is False
         assert "No handler registered" in result.error
 
-    def test_execute_with_handler(self, tmp_path):
+    @pytest.mark.asyncio
+    async def test_execute_with_handler(self, tmp_path):
         """Executing with handler should succeed."""
         executor = ToolExecutor(tmp_path)
 
@@ -427,11 +429,12 @@ class TestToolExecutor:
             )
 
         executor.register_handler("run_tests", handler)
-        result = executor.execute("run_tests", {})
+        result = await executor.execute_async("run_tests", {})
         assert result.success is True
         assert result.result["passed"] is True
 
-    def test_execute_validation_failure(self, tmp_path):
+    @pytest.mark.asyncio
+    async def test_execute_validation_failure(self, tmp_path):
         """Validation failure should prevent execution."""
         executor = ToolExecutor(tmp_path)
         executor.register_handler(
@@ -442,11 +445,12 @@ class TestToolExecutor:
             ),
         )
         # Missing required fields
-        result = executor.execute("mark_feature_complete", {})
+        result = await executor.execute_async("mark_feature_complete", {})
         assert result.success is False
         assert "Validation errors" in result.error
 
-    def test_execute_handler_exception(self, tmp_path):
+    @pytest.mark.asyncio
+    async def test_execute_handler_exception(self, tmp_path):
         """Handler exception should be caught."""
         executor = ToolExecutor(tmp_path)
 
@@ -454,32 +458,35 @@ class TestToolExecutor:
             raise ValueError("Handler crashed")
 
         executor.register_handler("run_tests", bad_handler)
-        result = executor.execute("run_tests", {})
+        result = await executor.execute_async("run_tests", {})
         assert result.success is False
         assert "Execution error" in result.error
         assert "Handler crashed" in result.error
 
-    def test_execution_log(self, tmp_path):
+    @pytest.mark.asyncio
+    async def test_execution_log(self, tmp_path):
         """Execution log should track all executions."""
         executor = ToolExecutor(tmp_path)
-        executor.execute("unknown1", {})
-        executor.execute("unknown2", {})
+        await executor.execute_async("unknown1", {})
+        await executor.execute_async("unknown2", {})
 
         log = executor.get_execution_log()
         assert len(log) == 2
         assert log[0].tool_name == "unknown1"
         assert log[1].tool_name == "unknown2"
 
-    def test_clear_execution_log(self, tmp_path):
+    @pytest.mark.asyncio
+    async def test_clear_execution_log(self, tmp_path):
         """Clear execution log should work."""
         executor = ToolExecutor(tmp_path)
-        executor.execute("unknown", {})
+        await executor.execute_async("unknown", {})
         assert len(executor.get_execution_log()) == 1
 
         executor.clear_execution_log()
         assert len(executor.get_execution_log()) == 0
 
-    def test_execution_time_measured(self, tmp_path):
+    @pytest.mark.asyncio
+    async def test_execution_time_measured(self, tmp_path):
         """Execution time should be measured."""
         executor = ToolExecutor(tmp_path)
 
@@ -493,7 +500,7 @@ class TestToolExecutor:
             )
 
         executor.register_handler("run_tests", slow_handler)
-        result = executor.execute("run_tests", {})
+        result = await executor.execute_async("run_tests", {})
         assert result.execution_time_ms >= 10
 
 
@@ -518,25 +525,6 @@ class TestValidateToolArguments:
             {"feature_id": "not an integer"},  # Should be integer
         )
         assert len(errors) > 0
-
-
-class TestExecuteTool:
-    """Tests for execute_tool helper."""
-
-    def test_execute_tool_helper(self, tmp_path):
-        """execute_tool should use provided executor."""
-        executor = ToolExecutor(tmp_path)
-        executor.register_handler(
-            "run_tests",
-            lambda args: ToolExecutionResult(
-                tool_name="run_tests",
-                success=True,
-                result="test result",
-            ),
-        )
-        result = execute_tool("run_tests", {}, executor)
-        assert result.success is True
-        assert result.result == "test result"
 
 
 class TestCreateDefaultHandlers:

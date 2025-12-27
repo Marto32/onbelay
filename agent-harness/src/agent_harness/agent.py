@@ -8,13 +8,14 @@ Handles:
 - Token usage tracking
 """
 
+import asyncio
 import os
 from dataclasses import dataclass, field
 from typing import Any, Callable, Generator, Optional
 
 try:
     import anthropic
-    from anthropic import Anthropic
+    from anthropic import AsyncAnthropic
     from anthropic.types import (
         ContentBlock,
         Message,
@@ -144,9 +145,9 @@ class AgentRunner:
 
         self.model = model
         self.max_tokens = max_tokens
-        self.client = Anthropic(api_key=self.api_key)
+        self.client = AsyncAnthropic(api_key=self.api_key)
 
-    def send_message(
+    async def send_message(
         self,
         messages: list[MessageParam],
         system_prompt: str,
@@ -174,12 +175,12 @@ class AgentRunner:
             params["tools"] = tools
 
         # Call API
-        response: Message = self.client.messages.create(**params)
+        response: Message = await self.client.messages.create(**params)
 
         # Parse response
         return self._parse_response(response)
 
-    def send_message_streaming(
+    async def send_message_streaming(
         self,
         messages: list[MessageParam],
         system_prompt: str,
@@ -214,8 +215,8 @@ class AgentRunner:
         stop_reason = ""
         usage = TokenUsage()
 
-        with self.client.messages.stream(**params) as stream:
-            for event in stream:
+        async with self.client.messages.stream(**params) as stream:
+            async for event in stream:
                 # Handle text delta events
                 if hasattr(event, "delta") and hasattr(event.delta, "text"):
                     text = event.delta.text
@@ -224,7 +225,7 @@ class AgentRunner:
                         on_text(text)
 
             # Get final message for tool calls and usage
-            final_message = stream.get_final_message()
+            final_message = await stream.get_final_message()
             stop_reason = final_message.stop_reason or ""
 
             # Extract tool calls
@@ -294,7 +295,7 @@ class AgentRunner:
             model=response.model,
         )
 
-    def run_conversation(
+    async def run_conversation(
         self,
         initial_message: str,
         system_prompt: str,
@@ -341,7 +342,7 @@ class AgentRunner:
             turns += 1
 
             # Get response
-            response = self.send_message(messages, system_prompt, tools)
+            response = await self.send_message(messages, system_prompt, tools)
             session.total_usage = session.total_usage + response.usage
 
             if on_response:

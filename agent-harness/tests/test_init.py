@@ -282,7 +282,8 @@ class TestValidateInitialization:
 class TestInitializeProject:
     """Tests for initialize_project."""
 
-    def test_dry_run_initialization(self, tmp_path):
+    @pytest.mark.asyncio
+    async def test_dry_run_initialization(self, tmp_path):
         """Dry run initialization works."""
         # Create spec file
         spec_file = tmp_path / "spec.md"
@@ -295,21 +296,22 @@ class TestInitializeProject:
             dry_run=True,
         )
 
-        result = initialize_project(config)
+        result = await initialize_project(config)
 
         assert result.success is True
         assert result.mode == "new"
         assert (tmp_path / ".harness").exists()
         assert (tmp_path / "features.json").exists()
 
-    def test_spec_not_found_error(self, tmp_path):
+    @pytest.mark.asyncio
+    async def test_spec_not_found_error(self, tmp_path):
         """Missing spec file returns error."""
         config = InitConfig(
             project_dir=tmp_path,
             spec_file=tmp_path / "nonexistent.md",
         )
 
-        result = initialize_project(config)
+        result = await initialize_project(config)
 
         assert result.success is False
         assert "not found" in result.error.lower()
@@ -318,12 +320,13 @@ class TestInitializeProject:
 class TestInitProject:
     """Tests for init_project helper."""
 
-    def test_init_project_helper(self, tmp_path):
-        """init_project helper works."""
+    @pytest.mark.asyncio
+    async def test_init_project_helper(self, tmp_path):
+        """init_project helper works (async)."""
         spec_file = tmp_path / "spec.md"
         spec_file.write_text("# Test\n\nDescription.")
 
-        result = init_project(
+        result = await init_project(
             project_dir=tmp_path,
             spec_file=spec_file,
             dry_run=True,
@@ -331,4 +334,6 @@ class TestInitProject:
 
         assert isinstance(result, InitResult)
         assert result.success is True
+        assert result.features_count >= 1
+
         assert result.features_count >= 1

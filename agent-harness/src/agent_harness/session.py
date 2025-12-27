@@ -12,6 +12,7 @@ Orchestrates a complete session lifecycle:
 9. Commit on success
 """
 
+import asyncio
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -30,7 +31,7 @@ from agent_harness.features import (
 )
 from agent_harness.git_ops import create_commit
 from agent_harness.orientation import generate_orientation_summary
-from agent_harness.preflight import PreflightResult, run_preflight_checks
+from agent_harness.preflight import PreflightResult, run_preflight_checks_async
 from agent_harness.progress import append_entry, ProgressEntry
 from agent_harness.progress_monitor import ProgressMonitor, ProgressSnapshot
 from agent_harness.prompts.builder import (
@@ -47,6 +48,7 @@ from agent_harness.state import (
     start_new_session,
 )
 from agent_harness.tools.executor import ToolExecutor, create_default_handlers
+from agent_harness.baseline import get_baseline_or_create, TestBaseline
 from agent_harness.verification import verify_feature_completion
 
 
@@ -119,7 +121,7 @@ class SessionOrchestrator:
         self.tests_run: int = 0
         self.tool_calls: int = 0
 
-    def run_session(self, session_config: SessionConfig) -> SessionResult:
+    async def run_session(self, session_config: SessionConfig) -> SessionResult:
         """Run a complete session.
 
         Args:
@@ -143,7 +145,7 @@ class SessionOrchestrator:
         try:
             # 1. Pre-flight checks
             if not session_config.skip_preflight:
-                preflight = run_preflight_checks(
+                preflight = await run_preflight_checks_async(
                     self.project_dir,
                     self.config,
                     skip_tests=session_config.skip_tests,
@@ -177,8 +179,8 @@ class SessionOrchestrator:
                     session=result.session_id,
                     reason=f"Session {result.session_id} start",
                 )
-                self.current_checkpoint_id = checkpoint.checkpoint_id
-                state.last_checkpoint_id = checkpoint.checkpoint_id
+                self.current_checkpoint_id = checkpoint.id
+                state.last_checkpoint_id = checkpoint.id
 
             # 5. Generate prompts
             orientation = generate_orientation_summary(
@@ -211,7 +213,7 @@ class SessionOrchestrator:
             for name, handler in handlers.items():
                 self.tool_executor.register_handler(name, handler)
 
-            agent_session = self._run_agent_loop(
+            agent_session = await self._run_agent_loop(
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
                 prompt_type=prompt_type,
@@ -223,10 +225,18 @@ class SessionOrchestrator:
 
             # 10. Verify completion
             if next_feature:
-                verification = verify_feature_completion(
-                    self.project_dir,
-                    features,
-                    next_feature.id,
+                # Load baseline for regression detection
+                baseline = get_baseline_or_create(
+                    self.harness_dir / "baseline.json",
+                    session=result.session_id,
+                )
+
+                verification = await verify_feature_completion(
+                    project_dir=self.project_dir,
+                    feature=next_feature,
+                    baseline=baseline,
+                    config=self.config.verification,
+                    lint_command=self.config.testing.lint_command if hasattr(self.config.testing, 'lint_command') else None,
                 )
                 result.verification_passed = verification.passed
 
@@ -299,7 +309,7 @@ class SessionOrchestrator:
 
         return result
 
-    def _run_agent_loop(
+    async def _run_agent_loop(
         self,
         system_prompt: str,
         user_prompt: str,
@@ -323,7 +333,7 @@ class SessionOrchestrator:
         def tool_executor_fn(name: str, inputs: dict) -> dict:
             """Execute a tool call."""
             self.tool_calls += 1
-            result = self.tool_executor.execute(name, inputs)
+            result = self.tool_executor.execute_sync_from_async_context(name, inputs)
             return result.to_dict()
 
         def response_callback(response):
@@ -355,7 +365,7 @@ class SessionOrchestrator:
             if on_response:
                 on_response(response)
 
-        return self.agent_runner.run_conversation(
+        return await self.agent_runner.run_conversation(
             initial_message=user_prompt,
             system_prompt=system_prompt,
             session_type=prompt_type,
@@ -408,7 +418,7 @@ class SessionOrchestrator:
         return " | ".join(parts)
 
 
-def run_session(
+async def run_session(
     project_dir: Path,
     config: Optional[Config] = None,
     skip_preflight: bool = False,
@@ -445,4 +455,4 @@ def run_session(
         on_response=on_response,
     )
 
-    return orchestrator.run_session(session_config)
+    return await orchestrator.run_session(session_config)

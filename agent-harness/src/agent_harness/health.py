@@ -22,7 +22,7 @@ from agent_harness.file_sizes import (
     update_tracker_from_scan,
 )
 from agent_harness.lint import LintResult, run_lint
-from agent_harness.test_runner import TestRunResult, run_tests
+from agent_harness.test_runner import TestRunResult
 
 
 @dataclass
@@ -61,7 +61,7 @@ WEIGHTS = {
 }
 
 
-def calculate_health(
+async def calculate_health(
     project_dir: Path,
     config: Config,
     features: Optional[FeaturesFile] = None,
@@ -69,7 +69,7 @@ def calculate_health(
     run_full_lint: bool = True,
 ) -> ProjectHealth:
     """
-    Calculate comprehensive project health.
+    Calculate comprehensive project health (async).
 
     Args:
         project_dir: Path to the project directory.
@@ -81,6 +81,8 @@ def calculate_health(
     Returns:
         ProjectHealth object with all metrics.
     """
+    from agent_harness.test_runner import run_tests_async
+
     # Calculate feature completion
     feature_completion = 0.0
     features_passing = 0
@@ -97,7 +99,7 @@ def calculate_health(
     test_result = None
 
     if run_full_tests:
-        test_result = run_tests(project_dir, timeout=config.testing.timeout)
+        test_result = await run_tests_async(project_dir, timeout=config.testing.timeout)
         tests_passing = len(test_result.passed)
         tests_total = test_result.total
         test_pass_rate = tests_passing / tests_total if tests_total > 0 else 1.0

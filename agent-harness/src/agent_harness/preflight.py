@@ -10,6 +10,7 @@ Verifies the environment is ready before launching an agent session:
 - Budget available
 """
 
+import asyncio
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -21,7 +22,7 @@ from agent_harness.costs import check_budget, load_costs
 from agent_harness.features import FeaturesFile, load_features
 from agent_harness.git_ops import get_changed_files, get_head_ref, get_untracked_files
 from agent_harness.state import SessionState, load_session_state
-from agent_harness.test_runner import run_tests
+from agent_harness.test_runner import run_tests_async
 
 
 @dataclass
@@ -162,11 +163,11 @@ def check_git_state(project_dir: Path) -> PreflightCheckResult:
         )
 
 
-def run_init_script(
+async def run_init_script(
     project_dir: Path,
     try_reset_on_fail: bool = True,
 ) -> PreflightCheckResult:
-    """Run init.sh script, with reset.sh fallback on failure.
+    """Run init.sh script, with reset.sh fallback on failure (async).
 
     Args:
         project_dir: Path to project directory.
@@ -188,15 +189,27 @@ def run_init_script(
 
     # Try running init.sh
     try:
-        result = subprocess.run(
-            ["bash", str(init_script)],
+        proc = await asyncio.create_subprocess_exec(
+            "bash",
+            str(init_script),
             cwd=project_dir,
-            capture_output=True,
-            text=True,
-            timeout=300,  # 5 minute timeout
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
         )
 
-        if result.returncode == 0:
+        try:
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=300)
+            returncode = proc.returncode or 0
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.wait()
+            return PreflightCheckResult(
+                name="init_script",
+                passed=False,
+                message="init.sh timed out after 5 minutes",
+            )
+
+        if returncode == 0:
             return PreflightCheckResult(
                 name="init_script",
                 passed=True,
@@ -205,44 +218,56 @@ def run_init_script(
 
         # Init failed - try reset if enabled
         if try_reset_on_fail and reset_script.exists():
-            reset_result = subprocess.run(
-                ["bash", str(reset_script)],
+            reset_proc = await asyncio.create_subprocess_exec(
+                "bash",
+                str(reset_script),
                 cwd=project_dir,
-                capture_output=True,
-                text=True,
-                timeout=300,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
             )
 
-            if reset_result.returncode == 0:
+            try:
+                await asyncio.wait_for(reset_proc.communicate(), timeout=300)
+                reset_returncode = reset_proc.returncode or 0
+            except asyncio.TimeoutError:
+                reset_proc.kill()
+                await reset_proc.wait()
+                reset_returncode = -1
+
+            if reset_returncode == 0:
                 # Try init again after reset
-                retry_result = subprocess.run(
-                    ["bash", str(init_script)],
+                retry_proc = await asyncio.create_subprocess_exec(
+                    "bash",
+                    str(init_script),
                     cwd=project_dir,
-                    capture_output=True,
-                    text=True,
-                    timeout=300,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
                 )
 
-                if retry_result.returncode == 0:
+                try:
+                    await asyncio.wait_for(retry_proc.communicate(), timeout=300)
+                    retry_returncode = retry_proc.returncode or 0
+                except asyncio.TimeoutError:
+                    retry_proc.kill()
+                    await retry_proc.wait()
+                    retry_returncode = -1
+
+                if retry_returncode == 0:
                     return PreflightCheckResult(
                         name="init_script",
                         passed=True,
                         message="init.sh succeeded after reset.sh",
                     )
 
+        stderr_text = stderr.decode() if stderr else ""
+        stdout_text = stdout.decode() if stdout else ""
         return PreflightCheckResult(
             name="init_script",
             passed=False,
-            message=f"init.sh failed with code {result.returncode}",
-            details=result.stderr[:500] if result.stderr else result.stdout[:500],
+            message=f"init.sh failed with code {returncode}",
+            details=stderr_text[:500] if stderr_text else stdout_text[:500],
         )
 
-    except subprocess.TimeoutExpired:
-        return PreflightCheckResult(
-            name="init_script",
-            passed=False,
-            message="init.sh timed out after 5 minutes",
-        )
     except Exception as e:
         return PreflightCheckResult(
             name="init_script",
@@ -251,11 +276,11 @@ def run_init_script(
         )
 
 
-def check_baseline_tests(
+async def check_baseline_tests(
     project_dir: Path,
     baseline: Optional[TestBaseline] = None,
 ) -> PreflightCheckResult:
-    """Run baseline tests and verify no regressions.
+    """Run baseline tests and verify no regressions (async).
 
     Args:
         project_dir: Path to project directory.
@@ -265,19 +290,19 @@ def check_baseline_tests(
         PreflightCheckResult.
     """
     # Run tests
-    test_result = run_tests(project_dir)
+    test_result = await run_tests_async(project_dir)
 
-    if not test_result.success:
+    if not test_result.all_passed:
         return PreflightCheckResult(
             name="baseline_tests",
             passed=False,
-            message=f"Tests failed: {test_result.failed} failed, {test_result.errors} errors",
-            details=test_result.output[:1000] if test_result.output else None,
+            message=f"Tests failed: {len(test_result.failed)} failed, {len(test_result.errors)} errors",
+            details=test_result.raw_output[:1000] if test_result.raw_output else None,
         )
 
     # Compare to baseline if provided
     if baseline:
-        current_passing = set(test_result.test_names or [])
+        current_passing = set(test_result.passed or [])
         baseline_passing = set(baseline.passing_tests)
 
         regressions = baseline_passing - current_passing
@@ -292,7 +317,7 @@ def check_baseline_tests(
     return PreflightCheckResult(
         name="baseline_tests",
         passed=True,
-        message=f"All tests pass ({test_result.passed} passed)",
+        message=f"All tests pass ({len(test_result.passed)} passed)",
     )
 
 
@@ -400,13 +425,15 @@ def check_features_file(project_dir: Path) -> PreflightCheckResult:
         )
 
 
-def run_preflight_checks(
+
+
+async def run_preflight_checks_async(
     project_dir: Path,
     config: Optional[Config] = None,
     skip_tests: bool = False,
     skip_init_script: bool = False,
 ) -> PreflightResult:
-    """Run all pre-flight checks.
+    """Run all pre-flight checks (async with concurrent execution).
 
     Args:
         project_dir: Path to project directory.
@@ -426,27 +453,30 @@ def run_preflight_checks(
         except Exception:
             config = Config()
 
-    # 1. Check working directory
+    # 1. Check working directory (must pass before continuing)
     result.add_check(check_working_directory(project_dir))
     if not result.passed:
         return result
 
-    # 2. Check harness files
+    # 2. Check harness files (must pass before continuing)
     result.add_check(check_harness_files(project_dir))
     if not result.passed:
         return result
 
-    # 3. Check git state
-    result.add_check(check_git_state(project_dir))
+    # 3-4. Run independent checks concurrently
+    git_check, features_check = await asyncio.gather(
+        asyncio.to_thread(check_git_state, project_dir),
+        asyncio.to_thread(check_features_file, project_dir),
+    )
 
-    # 4. Check features file
-    result.add_check(check_features_file(project_dir))
+    result.add_check(git_check)
+    result.add_check(features_check)
     if not result.passed:
         return result
 
     # 5. Run init script (if not skipped)
     if not skip_init_script:
-        result.add_check(run_init_script(project_dir))
+        result.add_check(await run_init_script(project_dir))
         if not result.passed:
             return result
 
@@ -459,12 +489,15 @@ def run_preflight_checks(
                 baseline = load_baseline(baseline_file)
             except Exception:
                 pass
-        result.add_check(check_baseline_tests(project_dir, baseline))
+        result.add_check(await check_baseline_tests(project_dir, baseline))
         if not result.passed:
             return result
 
-    # 7. Check budget
-    result.add_check(check_budget_available(project_dir, config))
+    # 7. Check budget (can run independently)
+    budget_check = await asyncio.to_thread(
+        check_budget_available, project_dir, config
+    )
+    result.add_check(budget_check)
 
     return result
 

@@ -12,7 +12,7 @@ from agent_harness.config import VerificationConfig
 from agent_harness.exceptions import VerificationError
 from agent_harness.features import Feature, FeaturesFile, get_feature_by_id
 from agent_harness.lint import run_lint, LintResult
-from agent_harness.test_runner import run_tests, TestRunResult
+from agent_harness.test_runner import run_tests_async, TestRunResult
 
 
 @dataclass
@@ -40,7 +40,7 @@ class ValidationResult:
     errors: list[str] = field(default_factory=list)
 
 
-def verify_feature_completion(
+async def verify_feature_completion(
     project_dir: Path,
     feature: Feature,
     baseline: TestBaseline,
@@ -48,7 +48,7 @@ def verify_feature_completion(
     lint_command: Optional[str] = None,
 ) -> VerificationResult:
     """
-    Verify that a feature is actually complete.
+    Verify that a feature is actually complete (async).
 
     Args:
         project_dir: Path to the project directory.
@@ -64,7 +64,7 @@ def verify_feature_completion(
     passed = True
 
     # Run feature-specific tests
-    test_result = run_tests(
+    test_result = await run_tests_async(
         project_dir,
         test_path=feature.test_file,
         timeout=300,
@@ -83,7 +83,7 @@ def verify_feature_completion(
     regression_tests = []
     if config.regression_check:
         # Run full test suite to check for regressions
-        full_result = run_tests(project_dir, timeout=300)
+        full_result = await run_tests_async(project_dir, timeout=300)
 
         # Import TestResults from baseline for comparison
         from agent_harness.baseline import TestResults
@@ -129,12 +129,12 @@ def verify_feature_completion(
     )
 
 
-def check_for_regressions(
+async def check_for_regressions(
     project_dir: Path,
     baseline: TestBaseline,
 ) -> list[str]:
     """
-    Check for test regressions against baseline.
+    Check for test regressions against baseline (async).
 
     Args:
         project_dir: Path to the project directory.
@@ -144,7 +144,7 @@ def check_for_regressions(
         List of regressed test IDs.
     """
     # Run full test suite
-    result = run_tests(project_dir, timeout=300)
+    result = await run_tests_async(project_dir, timeout=300)
 
     from agent_harness.baseline import TestResults
 
@@ -298,13 +298,13 @@ def format_verification_report(result: VerificationResult, feature: Feature) -> 
     return "\n".join(lines)
 
 
-def quick_verify_feature(
+async def quick_verify_feature(
     project_dir: Path,
     feature_id: int,
     features_file: FeaturesFile,
 ) -> tuple[bool, str]:
     """
-    Quick verification of a feature's test file.
+    Quick verification of a feature's test file (async).
 
     Args:
         project_dir: Path to the project directory.
@@ -318,7 +318,7 @@ def quick_verify_feature(
     if feature is None:
         return False, f"Feature {feature_id} not found"
 
-    result = run_tests(project_dir, test_path=feature.test_file)
+    result = await run_tests_async(project_dir, test_path=feature.test_file)
 
     if result.all_passed:
         return True, f"All {len(result.passed)} tests passed"
@@ -326,12 +326,12 @@ def quick_verify_feature(
         return False, f"Tests failed: {len(result.failed)} failures, {len(result.errors)} errors"
 
 
-def verify_all_features(
+async def verify_all_features(
     project_dir: Path,
     features_file: FeaturesFile,
 ) -> dict[int, tuple[bool, str]]:
     """
-    Verify all features in a features file.
+    Verify all features in a features file (async).
 
     Args:
         project_dir: Path to the project directory.
@@ -343,7 +343,7 @@ def verify_all_features(
     results = {}
 
     for feature in features_file.features:
-        passed, message = quick_verify_feature(project_dir, feature.id, features_file)
+        passed, message = await quick_verify_feature(project_dir, feature.id, features_file)
         results[feature.id] = (passed, message)
 
     return results

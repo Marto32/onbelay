@@ -1,5 +1,6 @@
 """CLI entry point for agent-harness."""
 
+import asyncio
 import sys
 from pathlib import Path
 from typing import Optional
@@ -108,6 +109,11 @@ def init(ctx: HarnessContext, spec: Path, mode: str, dry_run: bool):
     create features.json, and prepare the project for
     automated coding sessions.
     """
+    asyncio.run(_async_init(ctx, spec, mode, dry_run))
+
+
+async def _async_init(ctx: HarnessContext, spec: Path, mode: str, dry_run: bool):
+    """Async implementation of init command."""
     from rich.progress import Progress, SpinnerColumn, TextColumn
     from agent_harness.init import init_project
 
@@ -131,7 +137,7 @@ def init(ctx: HarnessContext, spec: Path, mode: str, dry_run: bool):
                 """Update progress on agent response."""
                 progress.update(task, description=f"Agent working... ({response.usage.output_tokens} tokens)")
 
-            result = init_project(
+            result = await init_project(
                 project_dir=ctx.project_dir,
                 spec_file=spec,
                 mode=mode,
@@ -218,6 +224,21 @@ def run(
     (or specified feature). Includes pre-flight checks,
     agent conversation, and verification.
     """
+    asyncio.run(_async_run(
+        ctx, dry_run, feature, skip_preflight, skip_tests, skip_commit, max_turns
+    ))
+
+
+async def _async_run(
+    ctx: HarnessContext,
+    dry_run: bool,
+    feature: Optional[int],
+    skip_preflight: bool,
+    skip_tests: bool,
+    skip_commit: bool,
+    max_turns: int,
+):
+    """Async implementation of run command."""
     import signal
     from rich.live import Live
     from rich.panel import Panel
@@ -275,7 +296,7 @@ def run(
             console=console,
             refresh_per_second=4,
         ) as live:
-            result = run_session(
+            result = await run_session(
                 project_dir=ctx.project_dir,
                 config=config,
                 skip_preflight=skip_preflight,
@@ -450,6 +471,11 @@ def health(ctx: HarnessContext, quick: bool):
     Runs tests, linting, and checks file sizes to
     calculate a composite health score.
     """
+    asyncio.run(_async_health(ctx, quick))
+
+
+async def _async_health(ctx: HarnessContext, quick: bool):
+    """Async implementation of health command."""
     from rich.table import Table
     from rich.progress import Progress, SpinnerColumn, TextColumn
     from agent_harness.health import (
@@ -492,7 +518,7 @@ def health(ctx: HarnessContext, quick: bool):
                 task = progress.add_task("Calculating project health...", total=None)
 
                 features = load_features(features_path) if features_path.exists() else None
-                health_result = calculate_health(
+                health_result = await calculate_health(
                     ctx.project_dir,
                     config,
                     features,
@@ -579,9 +605,14 @@ def verify(ctx: HarnessContext, feature: Optional[int], verify_all: bool, update
     Runs the test file for a specific feature (or all features)
     and reports pass/fail status.
     """
+    asyncio.run(_async_verify(ctx, feature, verify_all, update))
+
+
+async def _async_verify(ctx: HarnessContext, feature: Optional[int], verify_all: bool, update: bool):
+    """Async implementation of verify command."""
     from rich.table import Table
     from agent_harness.features import load_features, save_features, get_feature_by_id, mark_feature_complete
-    from agent_harness.test_runner import run_test_file, format_test_summary
+    from agent_harness.test_runner import run_test_file_async, format_test_summary
 
     try:
         config = ctx.load_config()
@@ -619,7 +650,7 @@ def verify(ctx: HarnessContext, feature: Optional[int], verify_all: bool, update
         for f in to_verify:
             print_info(f"Verifying feature #{f.id}: {f.description[:40]}...")
 
-            test_result = run_test_file(ctx.project_dir, f.test_file)
+            test_result = await run_test_file_async(ctx.project_dir, f.test_file)
             passed = test_result.all_passed
 
             status_str = "[green]PASS[/green]" if passed else "[red]FAIL[/red]"
@@ -809,9 +840,14 @@ def takeback(ctx: HarnessContext):
     Resumes harness after human intervention,
     updating baseline if needed.
     """
+    asyncio.run(_async_takeback(ctx))
+
+
+async def _async_takeback(ctx: HarnessContext):
+    """Async implementation of takeback command."""
     from agent_harness.state import load_session_state, save_session_state, clear_paused, is_paused
     from agent_harness.baseline import create_baseline_from_test_results, save_baseline
-    from agent_harness.test_runner import run_tests
+    from agent_harness.test_runner import run_tests_async
 
     try:
         harness_dir = ctx.project_dir / ".harness"
@@ -823,7 +859,7 @@ def takeback(ctx: HarnessContext):
 
         # Update test baseline
         print_info("Updating test baseline...")
-        test_result = run_tests(ctx.project_dir)
+        test_result = await run_tests_async(ctx.project_dir)
         if test_result.total > 0:
             baseline = create_baseline_from_test_results(test_result)
             save_baseline(harness_dir / "baseline.json", baseline)

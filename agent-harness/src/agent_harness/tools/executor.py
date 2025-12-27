@@ -3,10 +3,12 @@
 Handles execution of tool calls from the agent and returns results.
 """
 
+import asyncio
+import inspect
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Awaitable, Callable, Optional, Union
 
 from agent_harness.tools.definitions import get_tool_by_name
 from agent_harness.tools.schemas import ToolSchema, validate_tool_input
@@ -39,8 +41,10 @@ class ToolExecutionResult:
         }
 
 
-# Type alias for tool handlers
-ToolHandler = Callable[[dict[str, Any]], ToolExecutionResult]
+# Type aliases for tool handlers (sync and async)
+SyncToolHandler = Callable[[dict[str, Any]], ToolExecutionResult]
+AsyncToolHandler = Callable[[dict[str, Any]], Awaitable[ToolExecutionResult]]
+ToolHandler = Union[SyncToolHandler, AsyncToolHandler]
 
 
 class ToolExecutor:
@@ -69,13 +73,72 @@ class ToolExecutor:
         """
         self.handlers[tool_name] = handler
 
-    def execute(
+    def execute_sync_from_async_context(
         self,
         tool_name: str,
         arguments: dict[str, Any],
         validate: bool = True,
     ) -> ToolExecutionResult:
-        """Execute a tool call.
+        """Execute tool synchronously from within an async context.
+
+        This is a special method for calling async tool execution from
+        sync callbacks that are themselves called from async code.
+        Uses asyncio.create_task() to schedule the async execution.
+
+        Args:
+            tool_name: Name of the tool to execute.
+            arguments: Tool arguments.
+            validate: Whether to validate arguments against schema.
+
+        Returns:
+            ToolExecutionResult with result or error.
+        """
+        # Create a task and run it in the current event loop
+        import asyncio
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            # We're in an async context - create a coroutine and run it
+            # We need to use a new event loop in a thread for this
+            import concurrent.futures
+            import threading
+
+            result_holder = []
+            def run_in_thread():
+                # Create new event loop for this thread
+                new_loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(new_loop)
+                try:
+                    result = new_loop.run_until_complete(
+                        self.execute_async(tool_name, arguments, validate)
+                    )
+                    result_holder.append(result)
+                finally:
+                    new_loop.close()
+
+            thread = threading.Thread(target=run_in_thread)
+            thread.start()
+            thread.join()
+
+            return result_holder[0] if result_holder else ToolExecutionResult(
+                tool_name=tool_name,
+                success=False,
+                error="Thread execution failed"
+            )
+        else:
+            # No loop running - use asyncio.run()
+            return asyncio.run(self.execute_async(tool_name, arguments, validate))
+
+
+    async def execute_async(
+        self,
+        tool_name: str,
+        arguments: dict[str, Any],
+        validate: bool = True,
+    ) -> ToolExecutionResult:
+        """Execute a tool call (async).
+
+        Supports both synchronous and asynchronous tool handlers.
+        Sync handlers are executed in a thread pool to avoid blocking.
 
         Args:
             tool_name: Name of the tool to execute.
@@ -121,9 +184,16 @@ class ToolExecutor:
             self.execution_log.append(result)
             return result
 
-        # Execute handler
+        # Execute handler (async or sync)
         try:
-            result = handler(arguments)
+            # Check if handler is async
+            if inspect.iscoroutinefunction(handler):
+                result = await handler(arguments)
+            else:
+                # Run sync handler in thread pool to avoid blocking
+                loop = asyncio.get_event_loop()
+                result = await loop.run_in_executor(None, handler, arguments)
+
             end_time = datetime.now()
             result.execution_time_ms = (end_time - start_time).total_seconds() * 1000
         except Exception as e:
@@ -171,12 +241,14 @@ def validate_tool_arguments(
     return validate_tool_input(schema, arguments)
 
 
-def execute_tool(
+
+
+async def execute_tool_async(
     tool_name: str,
     arguments: dict[str, Any],
     executor: ToolExecutor,
 ) -> ToolExecutionResult:
-    """Execute a tool using the provided executor.
+    """Execute a tool using the provided executor (async).
 
     Convenience function for simple tool execution.
 
@@ -188,7 +260,7 @@ def execute_tool(
     Returns:
         ToolExecutionResult.
     """
-    return executor.execute(tool_name, arguments)
+    return await executor.execute_async(tool_name, arguments)
 
 
 def create_default_handlers(project_dir: Path) -> dict[str, ToolHandler]:

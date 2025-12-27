@@ -20,6 +20,68 @@ The plan follows a **depth-first approach**: build the minimal vertical slice fi
 
 ---
 
+## Design Deviations
+
+This section documents intentional deviations from the original design made during implementation.
+
+### Phase 3.1: AgentRunner API Changes
+
+The original design specified a simpler API signature. The implementation evolved to:
+
+1. **Constructor changes:** Takes `api_key`, `model`, and `max_tokens` directly instead of a `Config` object, allowing more flexible instantiation.
+
+2. **`run_conversation` signature:** Changed from accepting raw messages and tools to:
+   - `initial_message: str` - First user message
+   - `session_type: str` - Determines tool selection automatically
+   - `tool_executor: Optional[ToolExecutor]` - Callback for tool execution
+   - Returns `AgentSession` instead of `AsyncIterator[AgentEvent]`
+
+3. **New dataclasses:** Added `TokenUsage`, `ConversationTurn`, and `AgentSession` for richer state tracking.
+
+**Rationale:** The new API provides better encapsulation of the conversation loop and cleaner integration with the tool system.
+
+### Phase 3.4: Tool Module Restructuring
+
+The original design specified:
+```
+tools/
+├── filesystem.py
+├── shell.py
+└── schemas.py
+```
+
+The implementation uses:
+```
+tools/
+├── definitions.py    # Tool schemas and session mappings
+├── executor.py       # ToolExecutor class with handler registration
+└── schemas.py        # Core schema types
+```
+
+**Rationale:** The harness provides high-level tools (run_tests, mark_feature_complete, etc.) rather than raw file/shell access. File and shell operations are delegated to the underlying agent's native capabilities (e.g., Claude Code's built-in tools). This separation of concerns simplifies the harness while allowing agents to use their full capabilities.
+
+### Tool Execution Model
+
+Original design used standalone functions:
+```python
+def execute_tool(tool_name: str, params: dict, project_dir: Path) -> ToolResult
+```
+
+Implementation uses a class-based approach:
+```python
+class ToolExecutor:
+    def register_handler(self, tool_name: str, handler: ToolHandler) -> None
+    def execute(self, tool_name: str, arguments: dict[str, Any]) -> ToolExecutionResult
+```
+
+**Rationale:** The class-based approach allows:
+- Handler registration per session
+- Execution logging
+- Support for both sync and async handlers
+- Input validation against schemas
+
+---
+
 ## Critical Path
 
 The critical path for a working prototype:
@@ -532,37 +594,110 @@ src/agent_harness/
 
 **Input Contract:**
 - System prompt
-- User message(s)
-- Available tools
+- Initial user message
+- Session type (for tool selection)
+- Tool executor function
 - Config (model, timeouts)
 
 **Output Contract:**
 ```python
 @dataclass
+class TokenUsage:
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_creation_input_tokens: int = 0
+    cache_read_input_tokens: int = 0
+
+    @property
+    def total_tokens(self) -> int
+    def __add__(self, other: "TokenUsage") -> "TokenUsage"
+
+@dataclass
+class ToolCall:
+    id: str
+    name: str
+    input: dict[str, Any]
+
+@dataclass
 class AgentResponse:
     content: str
-    tool_calls: List[ToolCall]
-    tokens_input: int
-    tokens_output: int
-    tokens_cached: int
-    stop_reason: str
+    tool_calls: list[ToolCall] = field(default_factory=list)
+    stop_reason: str = ""
+    usage: TokenUsage = field(default_factory=TokenUsage)
+    model: str = ""
+
+    @property
+    def has_tool_calls(self) -> bool
+
+@dataclass
+class ConversationTurn:
+    role: str  # "user" or "assistant"
+    content: str
+    tool_calls: list[ToolCall] = field(default_factory=list)
+    tool_results: dict[str, Any] = field(default_factory=dict)
+
+@dataclass
+class AgentSession:
+    model: str
+    system_prompt: str
+    session_type: str
+    history: list[ConversationTurn] = field(default_factory=list)
+    total_usage: TokenUsage = field(default_factory=TokenUsage)
+    tool_call_count: int = 0
+
+# Type alias for tool executor function
+ToolExecutor = Callable[[str, dict[str, Any]], dict[str, Any]]
 
 class AgentRunner:
-    def __init__(self, config: Config)
+    def __init__(
+        self,
+        api_key: Optional[str] = None,
+        model: str = "claude-sonnet-4-20250514",
+        max_tokens: int = 4096,
+    )
+
+    async def send_message(
+        self,
+        messages: list[MessageParam],
+        system_prompt: str,
+        tools: Optional[list[dict]] = None,
+    ) -> AgentResponse
+
+    async def send_message_streaming(
+        self,
+        messages: list[MessageParam],
+        system_prompt: str,
+        tools: Optional[list[dict]] = None,
+        on_text: Optional[Callable[[str], None]] = None,
+    ) -> AgentResponse
+
     async def run_conversation(
         self,
+        initial_message: str,
         system_prompt: str,
-        messages: List[Message],
-        tools: List[Tool]
-    ) -> AsyncIterator[AgentEvent]
+        session_type: str = "coding",
+        tool_executor: Optional[ToolExecutor] = None,
+        max_turns: int = 50,
+        on_response: Optional[Callable[[AgentResponse], None]] = None,
+    ) -> AgentSession
+
+    def get_cost(self, usage: TokenUsage) -> float
+
+def create_agent_runner(
+    api_key: Optional[str] = None,
+    model: str = "claude-sonnet-4-20250514",
+    max_tokens: int = 4096,
+) -> AgentRunner
+
+def is_anthropic_available() -> bool
 ```
 
 **Acceptance Criteria:**
-- [ ] Connects to Claude API
-- [ ] Sends system and user messages
-- [ ] Handles streaming responses
-- [ ] Executes tool calls
-- [ ] Reports token usage
+- [x] Connects to Claude API
+- [x] Sends system and user messages
+- [x] Handles streaming responses
+- [x] Executes tool calls via ToolExecutor callback
+- [x] Reports token usage via TokenUsage dataclass
 
 **Complexity:** Large
 
@@ -673,49 +808,124 @@ def generate_continuation_details(
 **Goal:** Define tools available to the agent.
 
 **Scope:**
-- File read/write tools
-- Shell command tool
-- Define tool schemas for Claude API
+- Harness-specific tools (test running, progress tracking, feature management)
+- Tool schemas for Claude API
+- Tool execution with validation
+- Session-type-based tool selection
 
 **Files to Create/Modify:**
 ```
 src/agent_harness/
 └── tools/
-    ├── __init__.py
-    ├── filesystem.py
-    ├── shell.py
-    └── schemas.py
+    ├── __init__.py       # Public exports
+    ├── definitions.py    # Tool schema definitions and session mappings
+    ├── executor.py       # Tool execution with handler registration
+    └── schemas.py        # ToolSchema dataclass and validation utilities
 ```
+
+**Design Note:** The implementation consolidated tool logic into `definitions.py` and `executor.py` rather than separate `filesystem.py` and `shell.py` files. This reflects the harness's focus on high-level operations (running tests, tracking progress) rather than raw file/shell access, which is delegated to the underlying agent's native capabilities.
 
 **Dependencies:** Phase 1.2
 
 **Input Contract:**
-- Tool configuration from config
-- Project directory (for path restrictions)
+- Session type for tool selection
+- Project directory (for tool execution context)
+- Tool arguments from agent
 
 **Output Contract:**
 ```python
+# schemas.py
 @dataclass
-class Tool:
+class PropertySchema:
+    type: str
+    description: str
+    enum: Optional[list[str]] = None
+    default: Optional[Any] = None
+    items: Optional[dict[str, Any]] = None  # For array types
+
+@dataclass
+class ToolSchema:
     name: str
     description: str
-    input_schema: dict
+    properties: dict[str, PropertySchema] = field(default_factory=dict)
+    required: list[str] = field(default_factory=list)
 
+    def to_dict(self) -> dict[str, Any]  # Convert to Claude API format
+
+def create_tool_schema(
+    name: str,
+    description: str,
+    properties: Optional[dict[str, dict[str, Any]]] = None,
+    required: Optional[list[str]] = None,
+) -> ToolSchema
+
+def validate_schema(schema: ToolSchema) -> list[str]
+def validate_tool_input(schema: ToolSchema, inputs: dict[str, Any]) -> list[str]
+
+# definitions.py
+HARNESS_TOOLS: dict[str, ToolSchema]  # All available tools
+
+# Session-specific tool lists
+CODING_TOOLS: list[str]        # mark_feature_complete, run_tests, etc.
+CONTINUATION_TOOLS: list[str]  # Same as coding
+CLEANUP_TOOLS: list[str]       # run_lint, check_file_sizes, etc.
+INIT_TOOLS: list[str]          # create_features_file, create_init_scripts
+
+def get_tool_by_name(name: str) -> Optional[ToolSchema]
+def get_tools_for_session(session_type: str) -> list[ToolSchema]
+def get_tools_as_api_format(session_type: str) -> list[dict]
+
+# executor.py
 @dataclass
-class ToolResult:
+class ToolExecutionResult:
+    tool_name: str
     success: bool
-    output: str
-    error: Optional[str]
+    result: Any = None
+    error: Optional[str] = None
+    execution_time_ms: float = 0.0
+    metadata: dict[str, Any] = field(default_factory=dict)
 
-def get_available_tools(config: ToolsConfig, project_dir: Path) -> List[Tool]
-def execute_tool(tool_name: str, params: dict, project_dir: Path) -> ToolResult
+    def to_dict(self) -> dict[str, Any]
+
+# Type aliases for tool handlers
+SyncToolHandler = Callable[[dict[str, Any]], ToolExecutionResult]
+AsyncToolHandler = Callable[[dict[str, Any]], Awaitable[ToolExecutionResult]]
+ToolHandler = Union[SyncToolHandler, AsyncToolHandler]
+
+class ToolExecutor:
+    def __init__(self, project_dir: Path)
+
+    def register_handler(self, tool_name: str, handler: ToolHandler) -> None
+    def execute(self, tool_name: str, arguments: dict[str, Any], validate: bool = True) -> ToolExecutionResult
+    async def execute_async(self, tool_name: str, arguments: dict[str, Any], validate: bool = True) -> ToolExecutionResult
+    def get_execution_log(self) -> list[ToolExecutionResult]
+    def clear_execution_log(self) -> None
+
+def validate_tool_arguments(tool_name: str, arguments: dict[str, Any]) -> list[str]
+def execute_tool(tool_name: str, arguments: dict[str, Any], executor: ToolExecutor) -> ToolExecutionResult
+async def execute_tool_async(tool_name: str, arguments: dict[str, Any], executor: ToolExecutor) -> ToolExecutionResult
+def create_default_handlers(project_dir: Path) -> dict[str, ToolHandler]
 ```
 
+**Available Tools:**
+- `run_tests` - Execute pytest for feature verification
+- `run_lint` - Run linting checks
+- `mark_feature_complete` - Mark feature as passing in features.json
+- `update_progress` - Add entry to claude-progress.txt
+- `create_checkpoint` - Create rollback checkpoint
+- `rollback_checkpoint` - Restore from checkpoint
+- `get_feature_status` - Query feature status
+- `signal_stuck` - Signal agent is stuck
+- `check_file_sizes` - Check for oversized files
+- `create_features_file` - Create features.json (init only)
+- `create_init_scripts` - Create init.sh/reset.sh (init only)
+
 **Acceptance Criteria:**
-- [ ] File tools respect allowed_paths
-- [ ] Shell tool enforces timeout
-- [ ] Shell tool blocks denied commands
-- [ ] Tool schemas match Claude API format
+- [x] Tool schemas match Claude API format
+- [x] Tools are filtered by session type
+- [x] Tool inputs are validated against schema
+- [x] Execution supports both sync and async handlers
+- [x] Execution log tracks all tool calls
 
 **Complexity:** Medium
 
@@ -2033,10 +2243,13 @@ def test_run_completes_feature():
 | `costs.py` | 2.4 | Cost tracking |
 | `progress.py` | 2.5 | Progress file |
 | `file_sizes.py` | 2.6 | File sizes |
-| `agent.py` | 3.1 | Agent runner |
+| `agent.py` | 3.1 | Agent runner with TokenUsage, AgentSession, ToolExecutor type |
 | `prompt_builder.py` | 3.2 | Prompts |
 | `orientation.py` | 3.3 | Orientation |
-| `tools/` | 3.4 | Agent tools |
+| `tools/__init__.py` | 3.4 | Tool module exports |
+| `tools/schemas.py` | 3.4 | ToolSchema, PropertySchema, validation |
+| `tools/definitions.py` | 3.4 | Tool definitions, session tool mappings |
+| `tools/executor.py` | 3.4 | ToolExecutor class, execution handling |
 | `git_ops.py` | 4.1 | Git operations |
 | `checkpoint.py` | 4.2 | Checkpoints |
 | `test_runner.py` | 5.1 | Test execution |

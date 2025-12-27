@@ -6,12 +6,12 @@ from pathlib import Path
 from agent_harness.test_runner import (
     TestResult,
     TestRunResult,
-    run_tests,
-    run_single_test,
+    run_tests_async,
+    run_single_test_async,
     get_test_files,
     discover_tests,
     format_test_summary,
-    run_test_file,
+    run_test_file_async,
     _parse_pytest_output,
 )
 
@@ -221,7 +221,8 @@ class TestFormatTestSummary:
 class TestRunTests:
     """Integration tests for run_tests function."""
 
-    def test_run_tests_on_real_tests(self, tmp_path):
+    @pytest.mark.asyncio
+    async def test_run_tests_on_real_tests(self, tmp_path):
         """Test running actual pytest on test files."""
         # Create a simple test file
         (tmp_path / "test_simple.py").write_text("""
@@ -234,7 +235,7 @@ def test_also_passes():
 
         # Run tests (this uses subprocess so may not work in all environments)
         # Note: This may fail if poetry is not available in the tmp_path context
-        result = run_tests(tmp_path, test_path="test_simple.py", use_json_report=False)
+        result = await run_tests_async(tmp_path, test_path="test_simple.py", use_json_report=False)
 
         # Test runs but may fail if no pyproject.toml - just verify it returns a result
         assert isinstance(result, TestRunResult)
@@ -246,10 +247,11 @@ def test_also_passes():
 class TestRunTestFile:
     """Tests for run_test_file function."""
 
-    def test_run_test_file_convenience(self, tmp_path):
+    @pytest.mark.asyncio
+    async def test_run_test_file_convenience(self, tmp_path):
         """Test run_test_file convenience wrapper."""
         (tmp_path / "test_example.py").write_text("def test_one(): assert True")
 
         # Just verify it runs without error
-        result = run_test_file(tmp_path, "test_example.py")
+        result = await run_test_file_async(tmp_path, "test_example.py")
         assert isinstance(result, TestRunResult)

@@ -11,7 +11,6 @@ from agent_harness.tools.definitions import (
 )
 from agent_harness.tools.executor import (
     ToolExecutionResult,
-    execute_tool,
     validate_tool_arguments,
 )
 from agent_harness.tools.schemas import (
@@ -27,7 +26,6 @@ __all__ = [
     "get_tools_for_session",
     # Executor
     "ToolExecutionResult",
-    "execute_tool",
     "validate_tool_arguments",
     # Schemas
     "ToolSchema",

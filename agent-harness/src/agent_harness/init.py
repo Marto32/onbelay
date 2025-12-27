@@ -8,6 +8,7 @@ Handles initializing a new project or adopting an existing codebase:
 5. Initialize state
 """
 
+import asyncio
 import json
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -20,7 +21,7 @@ from agent_harness.config import Config, save_config
 from agent_harness.features import Feature, FeaturesFile, save_features, validate_features
 from agent_harness.prompts.builder import build_system_prompt, build_user_prompt
 from agent_harness.state import SessionState, initialize_session_state, save_session_state
-from agent_harness.test_runner import run_tests
+from agent_harness.test_runner import run_tests_async
 from agent_harness.tools.executor import ToolExecutor, create_default_handlers
 from agent_harness.version import __version__
 
@@ -199,7 +200,7 @@ def validate_initialization(
     return errors
 
 
-def run_initializer_agent(
+async def run_initializer_agent(
     config: InitConfig,
     spec_content: dict[str, Any],
     mode: str,
@@ -249,12 +250,12 @@ def run_initializer_agent(
         tool_executor.register_handler(name, handler)
 
     def execute_tool(name: str, inputs: dict) -> dict:
-        result = tool_executor.execute(name, inputs)
+        result = tool_executor.execute_sync_from_async_context(name, inputs)
         return result.to_dict()
 
     # Run agent conversation
     try:
-        session = agent.run_conversation(
+        session = await agent.run_conversation(
             initial_message=user_prompt,
             system_prompt=system_prompt,
             session_type="initializer",
@@ -314,7 +315,7 @@ def create_default_features(
     return features
 
 
-def initialize_project(config: InitConfig) -> InitResult:
+async def initialize_project(config: InitConfig) -> InitResult:
     """Initialize a project for harness use.
 
     Args:
@@ -358,7 +359,7 @@ def initialize_project(config: InitConfig) -> InitResult:
         # 7. Run initializer agent (or skip for dry run)
         features = None
         if not config.dry_run:
-            features, warnings = run_initializer_agent(
+            features, warnings = await run_initializer_agent(
                 config,
                 spec_content,
                 result.mode,
@@ -376,7 +377,7 @@ def initialize_project(config: InitConfig) -> InitResult:
 
         # 10. Create initial baseline (if tests exist)
         try:
-            test_result = run_tests(config.project_dir)
+            test_result = await run_tests_async(config.project_dir)
             if test_result.success:
                 baseline = create_baseline_from_test_results(test_result)
                 save_baseline(harness_dir / "baseline.json", baseline)
@@ -399,14 +400,14 @@ def initialize_project(config: InitConfig) -> InitResult:
     return result
 
 
-def init_project(
+async def init_project(
     project_dir: Path,
     spec_file: Path,
     mode: str = "auto",
     dry_run: bool = False,
     on_response: Optional[Callable] = None,
 ) -> InitResult:
-    """Helper function to initialize a project.
+    """Helper function to initialize a project (async).
 
     Args:
         project_dir: Path to project directory.
@@ -425,4 +426,6 @@ def init_project(
         dry_run=dry_run,
         on_response=on_response,
     )
-    return initialize_project(config)
+    return await initialize_project(config)
+
+
