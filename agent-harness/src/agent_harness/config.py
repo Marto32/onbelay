@@ -134,7 +134,9 @@ class FeaturesConfig:
 class GithubConfig:
     """GitHub integration configuration."""
 
+    enabled: bool = False
     repo: Optional[str] = None
+    label: str = "harness"
     sync_mode: str = "mirror"  # "mirror" or "none"
     sync_on_session_end: bool = True
     create_missing_issues: bool = True

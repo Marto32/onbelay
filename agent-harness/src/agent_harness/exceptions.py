@@ -71,3 +71,17 @@ class PreflightError(HarnessError):
     def __init__(self, check_name: str, message: str):
         self.check_name = check_name
         super().__init__(f"Pre-flight check '{check_name}' failed: {message}")
+
+
+class MigrationError(HarnessError):
+    """Error during state migration."""
+
+    pass
+
+
+class ToolExecutionError(HarnessError):
+    """Error executing a tool."""
+
+    def __init__(self, tool_name: str, message: str):
+        self.tool_name = tool_name
+        super().__init__(f"Tool '{tool_name}' failed: {message}")
